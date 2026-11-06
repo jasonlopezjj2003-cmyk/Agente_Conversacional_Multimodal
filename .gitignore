@@ -1,0 +1,20 @@
+# Datos del negocio: nunca subir
+*.xlsx
+*.xls
+*.csv
+*.db
+*.sqlite
+
+# Clave de acceso
+.clave
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Sistema
+.DS_Store
+Thumbs.db

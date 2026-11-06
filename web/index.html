@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Asistente de inventario</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --superficie: #ffffff; --texto: #1f1f1d; --suave: #6b6b66;
+    --borde: #e2e2dd; --acento: #2f6f5e; --acento-texto: #ffffff;
+    --burbuja-usuario: #2f6f5e; --burbuja-usuario-texto: #ffffff; --error: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615; --superficie: #1f1f1e; --texto: #ececea; --suave: #9a9a94;
+      --borde: #33332f; --acento: #4aa58d; --acento-texto: #0d1512;
+      --burbuja-usuario: #2c5c4e; --burbuja-usuario-texto: #f2f2f0; --error: #f2b8b5;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--texto);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; height: 100dvh;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 12px 16px; background: var(--superficie); border-bottom: 1px solid var(--borde);
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  header .sub { font-size: 12px; color: var(--suave); }
+  button {
+    font: inherit; cursor: pointer; border-radius: 10px; border: 1px solid var(--borde);
+    background: var(--superficie); color: var(--texto); padding: 8px 14px;
+  }
+  button:hover { border-color: var(--acento); }
+  button.primario { background: var(--acento); color: var(--acento-texto); border-color: var(--acento); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  main { flex: 1; overflow-y: auto; padding: 16px; }
+  .columna { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+  .msg { display: flex; }
+  .msg.usuario { justify-content: flex-end; }
+  .burbuja {
+    max-width: 88%; padding: 10px 14px; border-radius: 16px; border: 1px solid var(--borde);
+    background: var(--superficie); overflow-wrap: anywhere;
+  }
+  .usuario .burbuja { background: var(--burbuja-usuario); color: var(--burbuja-usuario-texto); border-color: transparent; white-space: pre-wrap; }
+  .error .burbuja { color: var(--error); border-color: var(--error); }
+  .burbuja p { margin: 0 0 6px; } .burbuja p:last-child { margin-bottom: 0; }
+  .burbuja ul { margin: 4px 0 6px; padding-left: 20px; }
+  .burbuja code { background: var(--bg); padding: 1px 5px; border-radius: 5px; font-size: .92em; }
+  .tabla { overflow-x: auto; margin: 6px 0; }
+  table { border-collapse: collapse; font-size: 14px; min-width: 100%; }
+  th, td { border: 1px solid var(--borde); padding: 5px 9px; text-align: left; white-space: nowrap; }
+  th { background: var(--bg); }
+  details { margin-top: 8px; font-size: 12px; color: var(--suave); }
+  details summary { cursor: pointer; }
+  details div { margin-top: 4px; font-family: ui-monospace, Consolas, monospace; word-break: break-all; }
+  .bienvenida { text-align: center; color: var(--suave); margin-top: 6vh; }
+  .bienvenida h2 { color: var(--texto); font-size: 20px; margin: 0 0 6px; }
+  .ejemplos { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 16px; }
+  .ejemplos button { font-size: 14px; border-radius: 999px; }
+  .burbuja { min-width: 0; }
+  .burbuja.ancha { max-width: 100%; }
+  .prod { margin-top: 8px; }
+  .prod-scroll { overflow: auto; max-height: 60vh; border: 1px solid var(--borde); border-radius: 10px; }
+  .prod table { font-size: 13px; width: 100%; border-collapse: collapse; }
+  .prod th, .prod td { border: 0; border-bottom: 1px solid var(--borde); padding: 6px 10px; text-align: left; white-space: nowrap; vertical-align: top; }
+  .prod th { position: sticky; top: 0; z-index: 1; background: var(--bg); font-size: 11px; letter-spacing: .04em; color: var(--suave); }
+  .prod td.texto { white-space: normal; min-width: 200px; max-width: 340px; }
+  .prod td.num, .prod th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .prod tr:last-child td { border-bottom: 0; }
+  .prod-pie { font-size: 12px; color: var(--suave); margin-top: 4px; }
+  .pensando { color: var(--suave); }
+  .pensando::after { content: ""; display: inline-block; width: 1.2em; text-align: left; animation: puntos 1.2s steps(4, end) infinite; }
+  @keyframes puntos { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75%,100% { content: "..."; } }
+  footer { padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px)); background: var(--superficie); border-top: 1px solid var(--borde); }
+  form { max-width: 1000px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end; }
+  textarea {
+    flex: 1; resize: none; font: inherit; color: var(--texto); background: var(--bg);
+    border: 1px solid var(--borde); border-radius: 12px; padding: 10px 12px; max-height: 160px;
+  }
+  textarea:focus { outline: 2px solid var(--acento); outline-offset: -1px; }
+  .nota { max-width: 1000px; margin: 6px auto 0; font-size: 11px; color: var(--suave); text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Asistente de inventario</h1>
+    <div class="sub">Responde con los datos reales de la base de datos</div>
+  </div>
+  <button id="nueva" type="button">Nueva conversación</button>
+</header>
+
+<main id="chat">
+  <div class="columna" id="mensajes"></div>
+</main>
+
+<footer>
+  <form id="form">
+    <textarea id="entrada" rows="1" maxlength="1000" placeholder="Pregunta sobre el inventario…" autofocus></textarea>
+    <button id="enviar" class="primario" type="submit">Enviar</button>
+  </form>
+  <div class="nota">Una consulta a la vez: si hay otra en curso, tu pregunta espera su turno.</div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+  var EJEMPLOS = [
+    "¿Cuál es el valor total del inventario?",
+    "¿Qué familias de productos hay?",
+    "Muéstrame los productos con mayor diferencia de conteo",
+    "¿Cuántas arandelas de 55 tenemos?"
+  ];
+
+  var $mensajes = document.getElementById("mensajes");
+  var $chat = document.getElementById("chat");
+  var $form = document.getElementById("form");
+  var $entrada = document.getElementById("entrada");
+  var $enviar = document.getElementById("enviar");
+  var $nueva = document.getElementById("nueva");
+  var ocupado = false;
+
+  // Identificador de conversación (cada navegador tiene el suyo)
+  function nuevoId() {
+    var a = new Uint8Array(16);
+    (window.crypto || window.msCrypto).getRandomValues(a);
+    return Array.prototype.map.call(a, function (b) { return ("0" + b.toString(16)).slice(-2); }).join("");
+  }
+  var sessionId = null;
+  try { sessionId = localStorage.getItem("inventario_sesion"); } catch (e) {}
+  if (!sessionId) {
+    sessionId = nuevoId();
+    try { localStorage.setItem("inventario_sesion", sessionId); } catch (e) {}
+  }
+
+  // ---- Mostrar texto de forma segura (se escapa todo antes de dar formato) ----
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function inline(s) {
+    return s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>");
+  }
+  var ES_FILA = /^\s*\|.*\|\s*$/, ES_ITEM = /^\s*[-*•]\s+/;
+  function tabla(filas) {
+    var celdas = function (r) { return r.trim().replace(/^\||\|$/g, "").split("|").map(function (c) { return c.trim(); }); };
+    var esSep = function (r) { return /^[\s:|-]+$/.test(r) && r.indexOf("-") !== -1; };
+    var datos = filas.filter(function (r) { return !esSep(r); }).map(celdas);
+    if (!datos.length) return "";
+    var cab = datos[0], cuerpo = datos.slice(1);
+    return '<div class="tabla"><table><thead><tr>' +
+      cab.map(function (c) { return "<th>" + inline(c) + "</th>"; }).join("") +
+      "</tr></thead><tbody>" +
+      cuerpo.map(function (r) { return "<tr>" + r.map(function (c) { return "<td>" + inline(c) + "</td>"; }).join("") + "</tr>"; }).join("") +
+      "</tbody></table></div>";
+  }
+  function formato(texto) {
+    var lineas = esc(texto).split("\n"), html = "", i = 0;
+    while (i < lineas.length) {
+      var l = lineas[i];
+      if (ES_FILA.test(l)) {
+        var filas = [];
+        while (i < lineas.length && ES_FILA.test(lineas[i])) { filas.push(lineas[i]); i++; }
+        html += tabla(filas); continue;
+      }
+      if (ES_ITEM.test(l)) {
+        var items = [];
+        while (i < lineas.length && ES_ITEM.test(lineas[i])) { items.push(lineas[i].replace(ES_ITEM, "")); i++; }
+        html += "<ul>" + items.map(function (x) { return "<li>" + inline(x) + "</li>"; }).join("") + "</ul>"; continue;
+      }
+      if (l.trim() !== "") html += "<p>" + inline(l) + "</p>";
+      i++;
+    }
+    return html;
+  }
+
+  // ---- Interfaz ----
+  function bajar() { $chat.scrollTop = $chat.scrollHeight; }
+
+  function agregar(clase, contenido, esHtml) {
+    var fila = document.createElement("div");
+    fila.className = "msg " + clase;
+    var b = document.createElement("div");
+    b.className = "burbuja";
+    if (esHtml) b.innerHTML = contenido; else b.textContent = contenido;
+    fila.appendChild(b);
+    $mensajes.appendChild(fila);
+    bajar();
+    return b;
+  }
+
+  // ---- Tabla de productos (se arma con los datos reales de la base, no con texto del modelo) ----
+  var COLS = [["codigo", "CODIGO", "t"], ["descripcion", "DESCRIPCION", "x"], ["unidad", "UM", "t"],
+              ["ubicacion", "UBICACION", "t"], ["saldo", "SALDO", "n"], ["costo", "COSTO", "c"],
+              ["familia", "FAMILIA", "t"], ["observaciones", "OBSERVACIONES", "x"]];
+  var EXTRA = [["contado", "CONTADO", "n"], ["diferencia", "DIFERENCIA", "n"], ["costo_diferencia", "COSTO DIF.", "c"]];
+
+  function fmt(v, tipo) {
+    if (v === null || v === undefined || v === "") return "";
+    if (tipo === "n") return Number(v).toLocaleString(undefined, { maximumFractionDigits: 4 });
+    if (tipo === "c") return Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return String(v);
+  }
+
+  function tablaProductos(t) {
+    var filas = t.filas || [];
+    var cols = COLS.slice();
+    if (filas.length && filas[0].diferencia !== undefined) cols = cols.concat(EXTRA);
+
+    var cont = document.createElement("div"); cont.className = "prod";
+    var scroll = document.createElement("div"); scroll.className = "prod-scroll";
+    var tabla = document.createElement("table");
+    var thead = document.createElement("thead"), trh = document.createElement("tr");
+    cols.forEach(function (c) {
+      var th = document.createElement("th");
+      th.textContent = c[1];
+      if (c[2] === "n" || c[2] === "c") th.className = "num";
+      trh.appendChild(th);
+    });
+    thead.appendChild(trh); tabla.appendChild(thead);
+
+    var tbody = document.createElement("tbody");
+    filas.forEach(function (f) {
+      var tr = document.createElement("tr");
+      cols.forEach(function (c) {
+        var td = document.createElement("td");
+        td.textContent = fmt(f[c[0]], c[2]);
+        if (c[2] === "n" || c[2] === "c") td.className = "num";
+        else if (c[2] === "x") td.className = "texto";
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    tabla.appendChild(tbody); scroll.appendChild(tabla); cont.appendChild(scroll);
+
+    var pie = document.createElement("div"); pie.className = "prod-pie";
+    var n = filas.length;
+    pie.textContent = n + (n === 1 ? " producto" : " productos") +
+      (t.total && t.total > n ? " de " + t.total + " en total" : "") +
+      (t.hay_mas ? " (hay más resultados sin mostrar: afina la búsqueda)" : "");
+    cont.appendChild(pie);
+    return cont;
+  }
+
+  function resumenConsulta(c) {
+    var args = [];
+    for (var k in c.argumentos) { if (Object.prototype.hasOwnProperty.call(c.argumentos, k)) args.push(k + ": " + c.argumentos[k]); }
+    return c.herramienta + (args.length ? " (" + args.join(", ") + ")" : "");
+  }
+
+  function mostrarBienvenida() {
+    $mensajes.innerHTML = "";
+    var d = document.createElement("div");
+    d.className = "bienvenida";
+    d.innerHTML = "<h2>¿Qué quieres saber del inventario?</h2><div>Pregunta por productos, cantidades, ubicaciones o valores.</div>";
+    var cont = document.createElement("div");
+    cont.className = "ejemplos";
+    EJEMPLOS.forEach(function (t) {
+      var b = document.createElement("button");
+      b.type = "button"; b.textContent = t;
+      b.addEventListener("click", function () { preguntar(t); });
+      cont.appendChild(b);
+    });
+    d.appendChild(cont);
+    $mensajes.appendChild(d);
+  }
+
+  function bloquear(v) {
+    ocupado = v; $enviar.disabled = v; $nueva.disabled = v; $entrada.disabled = v;
+    if (!v) $entrada.focus();
+  }
+
+  function post(url, cuerpo) {
+    return fetch(url, {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(cuerpo)
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (datos) {
+        if (!r.ok) { var e = new Error(datos.detail || ("Error " + r.status)); throw e; }
+        return datos;
+      });
+    });
+  }
+
+  function preguntar(texto) {
+    texto = (texto || "").trim();
+    if (!texto || ocupado) return;
+    if ($mensajes.querySelector(".bienvenida")) $mensajes.innerHTML = "";
+    agregar("usuario", texto, false);
+    $entrada.value = ""; ajustarAltura();
+    bloquear(true);
+    var espera = agregar("asistente", "Consultando el inventario", false);
+    espera.classList.add("pensando");
+
+    post("/api/chat", { session_id: sessionId, mensaje: texto }).then(function (datos) {
+      espera.classList.remove("pensando");
+      espera.innerHTML = formato(datos.respuesta || "(sin respuesta)");
+      if (datos.tablas && datos.tablas.length) {
+        espera.classList.add("ancha");
+        datos.tablas.forEach(function (t) { espera.appendChild(tablaProductos(t)); });
+      }
+      if (datos.consultas && datos.consultas.length) {
+        var det = document.createElement("details");
+        var sum = document.createElement("summary");
+        sum.textContent = "Datos consultados (" + datos.consultas.length + ")";
+        det.appendChild(sum);
+        datos.consultas.forEach(function (c) {
+          var d = document.createElement("div"); d.textContent = resumenConsulta(c); det.appendChild(d);
+        });
+        espera.appendChild(det);
+      }
+    }).catch(function (err) {
+      var fila = espera.parentNode; fila.className = "msg asistente error";
+      espera.classList.remove("pensando");
+      espera.textContent = err.message === "Failed to fetch"
+        ? "No pude conectar con el servidor. Revisa que siga encendido." : err.message;
+    }).then(function () { bloquear(false); bajar(); });
+  }
+
+  function ajustarAltura() {
+    $entrada.style.height = "auto";
+    $entrada.style.height = Math.min($entrada.scrollHeight, 160) + "px";
+  }
+
+  $form.addEventListener("submit", function (e) { e.preventDefault(); preguntar($entrada.value); });
+  $entrada.addEventListener("input", ajustarAltura);
+  $entrada.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); preguntar($entrada.value); }
+  });
+  $nueva.addEventListener("click", function () {
+    post("/api/nueva", { session_id: sessionId, mensaje: "" }).catch(function () {});
+    sessionId = nuevoId();
+    try { localStorage.setItem("inventario_sesion", sessionId); } catch (e) {}
+    mostrarBienvenida();
+  });
+
+  mostrarBienvenida();
+})();
+</script>
+</body>
+</html>

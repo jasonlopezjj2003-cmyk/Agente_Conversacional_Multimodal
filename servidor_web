@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Comando corto para el asistente de inventario.
+#
+#   servidor_web start      Abre el servidor a la red del negocio (usa la clave)
+#   servidor_web local      Solo accesible desde este equipo (sin clave)
+#   servidor_web importar   Regenera la base de datos desde el Excel
+#   servidor_web ayuda      Muestra esta ayuda
+#
+# La clave se lee de la variable INVENTARIO_CLAVE o del archivo ".clave"
+# (una sola línea con la clave; ese archivo no se sube a GitHub).
+
+# Trabaja siempre desde la carpeta del proyecto, sin importar desde dónde lo llames
+cd "$(dirname "$(readlink -f "$0")")" || exit 1
+
+# ---- Ajustes (cámbialos aquí si hace falta) ----
+DB="DataBase/inventario.db"
+EXCEL="DataBase/Data.xlsx"
+MODELO="qwen3:8b"
+PUERTO=8000
+# -------------------------------------------------
+
+if [ -z "$INVENTARIO_CLAVE" ] && [ -f .clave ]; then
+  INVENTARIO_CLAVE="$(head -n 1 .clave | tr -d '\r\n')"
+fi
+
+ayuda() {
+  sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+case "$1" in
+  start)
+    if [ -z "$INVENTARIO_CLAVE" ]; then
+      echo "Falta la clave de acceso. Créala una sola vez con:"
+      echo "  echo 'tu-clave-segura' > .clave"
+      exit 1
+    fi
+    export INVENTARIO_CLAVE
+    python -m API.servidor_web --db "$DB" --modelo "$MODELO" --puerto "$PUERTO"
+    ;;
+  local)
+    INVENTARIO_CLAVE="" python -m API.servidor_web --db "$DB" --modelo "$MODELO" --puerto "$PUERTO"
+    ;;
+  importar)
+    if [ ! -f "$EXCEL" ]; then
+      echo "No encuentro el Excel en $EXCEL"
+      exit 1
+    fi
+    python DataBase/importar_inventario.py "$EXCEL" --db "$DB"
+    ;;
+  ayuda|-h|--help|"")
+    ayuda
+    ;;
+  *)
+    echo "Comando desconocido: $1"
+    echo
+    ayuda
+    exit 1
+    ;;
+esac
