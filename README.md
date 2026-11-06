@@ -1,6 +1,6 @@
 # Asistente de inventario con IA local
 
-Chat web que responde preguntas sobre el inventario de un negocio usando un modelo de IA que corre **en tu propio equipo, sin internet**. La IA no calcula ni inventa cifras: cada dato sale de una consulta a una base de datos SQLite (abierta en solo lectura).
+Chat web que responde preguntas sobre el Catalogo de un negocio. La IA no calcula ni inventa cifras: cada dato sale de una consulta a una base de datos SQLite (abierta en solo lectura).
 
 Ejemplos de preguntas: "¿cuántas arandelas de 55 hay?", "tractores John Deere", "¿cuál manguera tiene más saldo?", "valor total de metales", "diferencias de conteo".
 
@@ -28,8 +28,8 @@ Proyecto_IA/
 │   └── asistente_inventario.py      IA + consultas a la base de datos
 ├── DataBase/
 │   ├── importar_inventario.py       Convierte el Excel en base de datos
-│   ├── Data.xlsx                    <- TU Excel va aquí (no se sube a GitHub)
-│   └── inventario.db                Se genera al importar (no se sube a GitHub)
+│   ├── Data.xlsx                   
+│   └── inventario.db                
 ├── web/
 │   └── index.html                   Página de chat
 ├── servidor_web                     Comando corto para arrancar todo
@@ -49,7 +49,7 @@ Proyecto_IA/
 **1. Clona el repositorio e instala las librerías**
 
 ```bash
-git clone https://github.com/TU_USUARIO/TU_REPO.git Proyecto_IA
+git clone https://github.com/jasonlopezjj2003-cmyk/Agente_Conversacional_Multimodal.git Proyecto_IA
 cd Proyecto_IA
 pip install -r requirements.txt
 ```
@@ -59,16 +59,11 @@ pip install -r requirements.txt
 ```bash
 ollama pull qwen3:8b
 ```
-
-Puedes usar otro modelo que soporte "tools" (llamadas a funciones); se cambia con `--modelo` o en la variable `MODELO` del archivo `servidor_web`.
-
-Para la **búsqueda por foto** (opcional) descarga también un modelo con visión:
+Modelo con visión, para la búsqueda por foto (opcional):
 
 ```bash
-ollama pull qwen2.5vl:3b
+ollama pull gemma3:4b
 ```
-
-Si no lo encuentra, busca un modelo con visión en https://ollama.com/library (por ejemplo `gemma3:4b`) y cámbialo con `--modelo-vision` o en la variable `MODELO_VISION` de `servidor_web`.
 
 **3. Coloca tu Excel del inventario**
 
@@ -146,8 +141,6 @@ Para detenerlo, pulsa `Ctrl+C`.
 python -m API.servidor_web --db DataBase/inventario.db --clave "tu-clave"
 ```
 
-Ejecútalo siempre desde la carpeta principal y respeta las mayúsculas de `API`.
-
 ## Qué puede responder
 
 - Buscar productos por nombre, medida o código, con su stock, costo y ubicación (tabla de hasta 30 filas)
@@ -155,19 +148,8 @@ Ejecútalo siempre desde la carpeta principal y respeta las mayúsculas de `API`
 - Productos con stock bajo, por ubicación y diferencias de conteo
 - Totales y rankings: valor del inventario, el de mayor saldo, etc.
 
-## Búsqueda por foto
-
-Pulsa **📷 Foto** en la página (en el celular abre la cámara) y sube la imagen de una pieza. Un modelo de visión local la describe y el sistema busca en el inventario los productos que mejor coinciden: cada palabra clave presente en la descripción suma puntos, y un código o texto legible en la pieza suma más. El resultado es una tabla de **posibles coincidencias**.
-
-- Funciona mejor con una foto nítida, con buena luz y la pieza centrada.
-- Si la pieza tiene un número de parte o etiqueta legible, inclúyelo en la foto: es lo más fiable.
-- La foto **no permite confirmar medidas**: verifica siempre la pieza antes de usar el resultado.
-- La foto se procesa en tu equipo y no se guarda.
-- Con una gráfica de 6 GB, el modelo de texto y el de visión no caben a la vez: Ollama los cambia, así que la primera foto tras una pregunta (o al revés) tarda más.
-
 ## Consejos para que funcione bien
 
-- Si `ollama ps` muestra un reparto CPU/GPU en vez de `100% GPU`, el modelo no cabe entero en la gráfica y irá más lento. Cierra programas que usen la GPU o activa `OLLAMA_FLASH_ATTENTION=1` y `OLLAMA_KV_CACHE_TYPE=q8_0`.
 - La IA atiende una consulta a la vez: si dos personas preguntan a la vez, la segunda espera su turno.
 
 ## Seguridad
@@ -176,14 +158,3 @@ Pulsa **📷 Foto** en la página (en el celular abre la cámara) y sube la imag
 - Sin `--clave`, el servidor solo acepta conexiones del propio equipo.
 - La clave viaja sin cifrar (HTTP) dentro de la red local. **No expongas este servidor a internet.**
 - Los datos del inventario (`.xlsx`, `.db`) y la clave (`.clave`) están excluidos del repositorio.
-
-## Problemas frecuentes
-
-| Error | Solución |
-|---|---|
-| `No module named 'api'` | Usa `API` en mayúsculas y ejecuta desde la carpeta principal |
-| `No existe el archivo Data.xlsx` | Colócalo en `DataBase/Data.xlsx` o indica su ruta completa |
-| `Falta la clave de acceso` | Crea el archivo `.clave` (paso 5) |
-| `No pude consultar el modelo` | Abre Ollama y comprueba que descargaste el modelo con `ollama pull` |
-| `$'\r': command not found` | Ejecuta `sed -i 's/\r$//' servidor_web` |
-| Otros equipos no pueden entrar | Permite Python en el firewall de Windows (red privada) |
