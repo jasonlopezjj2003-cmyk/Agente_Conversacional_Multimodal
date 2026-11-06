@@ -1,21 +1,10 @@
-#!/usr/bin/env bash
-# Comando corto para el asistente de inventario.
-#
-#   servidor_web start      Abre el servidor a la red del negocio (usa la clave)
-#   servidor_web local      Solo accesible desde este equipo (sin clave)
-#   servidor_web importar   Regenera la base de datos desde el Excel
-#   servidor_web ayuda      Muestra esta ayuda
-#
-# La clave se lee de la variable INVENTARIO_CLAVE o del archivo ".clave"
-# (una sola línea con la clave; ese archivo no se sube a GitHub).
-
-# Trabaja siempre desde la carpeta del proyecto, sin importar desde dónde lo llames
 cd "$(dirname "$(readlink -f "$0")")" || exit 1
 
 # ---- Ajustes (cámbialos aquí si hace falta) ----
 DB="DataBase/inventario.db"
 EXCEL="DataBase/Data.xlsx"
 MODELO="qwen3:8b"
+MODELO_VISION="gemma3:4b"   # para la búsqueda por foto
 PUERTO=8000
 # -------------------------------------------------
 
@@ -35,10 +24,10 @@ case "$1" in
       exit 1
     fi
     export INVENTARIO_CLAVE
-    python -m API.servidor_web --db "$DB" --modelo "$MODELO" --puerto "$PUERTO"
+    python -m API.servidor_web --db "$DB" --modelo "$MODELO" --modelo-vision "$MODELO_VISION" --puerto "$PUERTO"
     ;;
   local)
-    INVENTARIO_CLAVE="" python -m API.servidor_web --db "$DB" --modelo "$MODELO" --puerto "$PUERTO"
+    INVENTARIO_CLAVE="" python -m API.servidor_web --db "$DB" --modelo "$MODELO" --modelo-vision "$MODELO_VISION" --puerto "$PUERTO"
     ;;
   importar)
     if [ ! -f "$EXCEL" ]; then

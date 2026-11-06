@@ -1,26 +1,6 @@
-#!/usr/bin/env python3
-"""
-Servidor web del asistente de inventario: API (FastAPI) + página de chat (web/index.html).
-
-Funciona sin internet, dentro de la red del negocio.
-
-Preparación (una sola vez, con internet):
-    pip install fastapi uvicorn ollama
-
-Uso:
-    # Solo desde este equipo (sin clave):
-    python servidor_web.py
-
-    # Abierto a la red del negocio (exige clave):
-    python servidor_web.py --clave "mi-clave-segura"
-    (o define la variable de entorno INVENTARIO_CLAVE)
-
-Luego abre en el navegador la dirección que imprime el programa,
-por ejemplo http://192.168.1.20:8000 (desde cualquier celular o PC de la misma red).
-El navegador pedirá usuario y clave: el usuario puede ser cualquiera; la clave es la que definiste.
-"""
-
 import argparse
+import base64
+import json
 import os
 import re
 import secrets
@@ -43,10 +23,10 @@ except ImportError as e:
 
 try:   # estructura en carpetas: Agente_Conversacional/asistente_inventario.py
     from Agente_Conversacional.asistente_inventario import (
-        INSTRUCCIONES, MAX_MENSAJES, MODELO_POR_DEFECTO, Inventario, responder)
+        INSTRUCCIONES, MAX_MENSAJES, MODELO_POR_DEFECTO, Inventario, extraer_tabla, responder)
 except ImportError:   # estructura plana: todos los archivos juntos
     from asistente_inventario import (INSTRUCCIONES, MAX_MENSAJES, MODELO_POR_DEFECTO,
-                                      Inventario, responder)
+                                      Inventario, extraer_tabla, responder)
 
 _AQUI = Path(__file__).resolve().parent
 PAGINA = next((c for c in (_AQUI / "web" / "index.html", _AQUI.parent / "web" / "index.html") if c.exists()),
@@ -55,11 +35,34 @@ MAX_SESIONES = 100            # conversaciones abiertas a la vez
 VIDA_SESION_SEG = 2 * 3600    # se descartan tras 2 horas sin uso
 MAX_LARGO_MENSAJE = 1000
 ID_VALIDO = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+MODELO_VISION_POR_DEFECTO = "qwen2.5vl:3b"
+MAX_FOTO_B64 = 4_000_000      # ~3 MB; la página reduce las fotos antes de enviarlas
+
+PROMPT_FOTO = (
+    "Eres un asistente de un almacén de repuestos de maquinaria pesada y agrícola. "
+    "Observa la imagen de una pieza o repuesto y responde SOLO con un JSON con estas claves: "
+    '"descripcion": una frase corta en español de lo que ves; '
+    '"palabras_clave": lista de 2 a 6 palabras en español, en singular, que usaría un almacenista para buscar '
+    'esta pieza en un catálogo (tipo de pieza y su función, por ejemplo "cilindro", "hidraulico", "filtro", '
+    '"rodamiento", "chumacera", "manguera", "arandela", "perno", "disco", "cadena"); '
+    '"texto_visible": lista de textos, códigos o números de parte que se lean claramente en la pieza '
+    "(lista vacía si no hay). No inventes marcas, medidas ni códigos que no se vean."
+)
 
 
 class PreguntaIn(BaseModel):
     session_id: str
     mensaje: str
+
+
+class FotoIn(BaseModel):
+    session_id: str
+    imagen: str
+
+
+class FamiliaIn(BaseModel):
+    session_id: str
+    familia: str
 
 
 def _rol(m) -> str:
@@ -88,7 +91,34 @@ def recortar_historial(mensajes: list) -> None:
         del mensajes[1:siguiente]
 
 
-def crear_app(inv: Inventario, modelo: str, clave: Optional[str]) -> FastAPI:
+def interpretar_foto(modelo_vision: str, imagen: bytes) -> dict:
+    """Pide al modelo de visión una descripción corta, palabras clave y texto legible de la pieza."""
+    resp = ollama.chat(model=modelo_vision, format="json", options={"temperature": 0},
+                       messages=[{"role": "user", "content": PROMPT_FOTO, "images": [imagen]}])
+    contenido = resp.message.content or ""
+    try:
+        datos = json.loads(contenido)
+    except ValueError:
+        m = re.search(r"\{.*\}", contenido, re.S)
+        try:
+            datos = json.loads(m.group(0)) if m else {}
+        except ValueError:
+            datos = {}
+    if not isinstance(datos, dict):
+        datos = {}
+
+    def lista(v):
+        if isinstance(v, str):
+            v = [v]
+        return [str(x).strip()[:80] for x in v if str(x).strip()][:8] if isinstance(v, list) else []
+
+    return {"descripcion": str(datos.get("descripcion") or "").strip()[:200],
+            "palabras": lista(datos.get("palabras_clave")),
+            "textos": lista(datos.get("texto_visible"))}
+
+
+def crear_app(inv: Inventario, modelo: str, clave: Optional[str],
+              modelo_vision: str = MODELO_VISION_POR_DEFECTO) -> FastAPI:
     app = FastAPI(title="Asistente de inventario", docs_url=None, redoc_url=None, openapi_url=None)
     seguridad = HTTPBasic(auto_error=False)
     lock_modelo = threading.Lock()      # el modelo atiende una consulta a la vez
@@ -140,9 +170,11 @@ def crear_app(inv: Inventario, modelo: str, clave: Optional[str]) -> FastAPI:
             mensajes.append({"role": "user", "content": texto})
             consultas: list = []
             tablas: list = []
+            sugerencias: list = []
             try:
                 respuesta = responder(ollama, inv, modelo, mensajes, verbose=False,
-                                      registro=consultas, tablas=tablas, solo_tabla=True)
+                                      registro=consultas, tablas=tablas, solo_tabla=True,
+                                      sugerencias=sugerencias)
             except Exception as e:
                 del mensajes[largo_previo:]     # deja la conversación como estaba
                 print(f"[error] {type(e).__name__}: {e}", file=sys.stderr)
@@ -152,7 +184,82 @@ def crear_app(inv: Inventario, modelo: str, clave: Optional[str]) -> FastAPI:
             recortar_historial(mensajes)
         if tablas and respuesta:
             respuesta = limpiar_respuesta(respuesta, tablas)
-        return {"respuesta": respuesta, "consultas": consultas, "tablas": tablas}
+        return {"respuesta": respuesta, "consultas": consultas, "tablas": tablas, "sugerencias": sugerencias}
+
+    @app.post("/api/foto")
+    def foto(req: FotoIn, _=Depends(autenticar)):
+        """Búsqueda por foto: el modelo de visión describe la pieza y se buscan productos parecidos."""
+        sid = validar_id(req.session_id)
+        b64 = req.imagen.split(",", 1)[1] if req.imagen.startswith("data:") else req.imagen
+        if len(b64) > MAX_FOTO_B64:
+            raise HTTPException(status_code=413, detail="La foto es demasiado grande.")
+        try:
+            raw = base64.b64decode(b64, validate=True)
+        except Exception:
+            raise HTTPException(status_code=400, detail="No pude leer la foto.")
+        if not (raw.startswith(b"\xff\xd8\xff") or raw.startswith(b"\x89PNG")):
+            raise HTTPException(status_code=400, detail="Formato no compatible: usa una foto JPG o PNG.")
+
+        with lock_modelo:
+            try:
+                info = interpretar_foto(modelo_vision, raw)
+            except Exception as e:
+                print(f"[error foto] {type(e).__name__}: {e}", file=sys.stderr)
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"No pude analizar la foto. Revisa que Ollama esté abierto y que '{modelo_vision}' "
+                           f"esté descargado (ollama pull {modelo_vision}).")
+            resultado = inv.buscar_por_descripcion_foto(info["palabras"], info["textos"])
+            tablas, sugerencias = [], []
+            tabla = extraer_tabla(resultado)
+            if tabla:
+                tablas.append(tabla)
+            elif info["palabras"]:   # sin productos parecidos: probar por familia
+                por_familia = inv.buscar_por_familia(" ".join(info["palabras"]), sugerir_todas=False)
+                if por_familia:
+                    tabla = extraer_tabla(por_familia)
+                    if tabla:
+                        tablas.append(tabla)
+                    sugerencias = por_familia.get("sugerencias") or []
+
+            partes = []
+            if info["descripcion"]:
+                partes.append(f"En la foto veo: {info['descripcion']}")
+            if info["palabras"]:
+                partes.append("Busqué por: " + ", ".join(info["palabras"]) + ".")
+            if info["textos"]:
+                partes.append("Texto legible en la pieza: " + ", ".join(info["textos"]) + ".")
+            if not tablas and not sugerencias:
+                partes.append("No encontré productos parecidos en el inventario. Prueba con otra foto o escribe el nombre de la pieza.")
+            else:
+                partes.append("Son posibles coincidencias: confirma la pieza, porque una foto no permite verificar medidas.")
+
+            mensajes = obtener_sesion(sid)["mensajes"]
+            mensajes.append({"role": "user", "content": "(El usuario subió una foto de una pieza.)"})
+            mensajes.append({"role": "assistant", "content": "(Se analizó la foto y se mostraron posibles coincidencias.)"})
+            recortar_historial(mensajes)
+        return {"respuesta": "\n".join(partes), "tablas": tablas, "sugerencias": sugerencias,
+                "consultas": [{"herramienta": "buscar_por_foto", "argumentos": {"palabras": ", ".join(info["palabras"])}}]}
+
+    @app.post("/api/familia")
+    def familia(req: FamiliaIn, _=Depends(autenticar)):
+        """Botones de sugerencia: muestra los productos de una familia sin pasar por el modelo."""
+        sid = validar_id(req.session_id)
+        nombre = req.familia.strip()
+        if not nombre or len(nombre) > 100:
+            raise HTTPException(status_code=400, detail="Familia inválida.")
+        with lock_modelo:
+            resultado = inv.productos_de_familia(nombre)
+            tabla = extraer_tabla(resultado)
+            if not tabla:
+                raise HTTPException(status_code=404, detail=resultado.get("error", "No encontré esa familia."))
+            tabla["titulo"] = tabla.get("titulo") or f"Familia: {nombre}"
+            mensajes = obtener_sesion(sid)["mensajes"]
+            mensajes.append({"role": "user", "content": f"Muéstrame los productos de la familia {nombre}."})
+            mensajes.append({"role": "assistant", "content": "(Se mostró al usuario la tabla con los resultados.)"})
+            recortar_historial(mensajes)
+        return {"respuesta": "", "tablas": [tabla], "sugerencias": [],
+                "consultas": [{"herramienta": "productos_de_familia", "argumentos": {"familia": nombre}}]}
 
     @app.post("/api/nueva")
     def nueva(req: PreguntaIn, _=Depends(autenticar)):
@@ -198,13 +305,15 @@ def main():
     ap = argparse.ArgumentParser(description="Servidor web del asistente de inventario.")
     ap.add_argument("--db", type=Path, default=Path("inventario.db"))
     ap.add_argument("--modelo", default=MODELO_POR_DEFECTO)
+    ap.add_argument("--modelo-vision", default=MODELO_VISION_POR_DEFECTO,
+                    help="Modelo de Ollama con visión, para la búsqueda por foto")
     ap.add_argument("--puerto", type=int, default=8000)
     ap.add_argument("--clave", default=None, help="Clave de acceso; si se define, el servidor se abre a la red")
     args = ap.parse_args()
 
     clave = args.clave or os.environ.get("INVENTARIO_CLAVE")
     inv = Inventario(args.db)
-    app = crear_app(inv, args.modelo, clave)
+    app = crear_app(inv, args.modelo, clave, args.modelo_vision)
 
     if clave:
         if len(clave) < 6:

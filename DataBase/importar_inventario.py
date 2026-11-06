@@ -1,27 +1,3 @@
-#!/usr/bin/env python3
-"""
-Importa el inventario desde Excel a una base de datos SQLite local.
-
-Uso:
-    python importar_inventario.py inventario.xlsx
-    python importar_inventario.py inventario.xlsx --db inventario.db
-    python importar_inventario.py inventario.xlsx --buscar "arandela 55"
-
-Requisitos (una sola vez, con internet):
-    pip install pandas openpyxl
-
-Qué hace:
-  1. Lee el Excel y normaliza los nombres de columnas.
-  2. Limpia los datos (comillas dobles, espacios, decimales, valores vacíos).
-  3. Descarta las columnas calculadas (ITEM, Total, DIF, Costo Diferencia);
-     la base de datos las calcula al consultar, así nunca quedan desactualizadas.
-  4. Crea las tablas `productos` y `conteos`, las vistas `v_inventario` y
-     `v_diferencias`, y un índice de búsqueda de texto (`productos_fts`).
-  5. Imprime un reporte con los problemas de calidad de datos encontrados.
-
-Es seguro volver a ejecutarlo: borra y recrea la base de datos cada vez.
-"""
-
 import argparse
 import re
 import sqlite3

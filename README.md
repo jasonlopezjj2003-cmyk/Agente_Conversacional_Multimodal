@@ -62,6 +62,14 @@ ollama pull qwen3:8b
 
 Puedes usar otro modelo que soporte "tools" (llamadas a funciones); se cambia con `--modelo` o en la variable `MODELO` del archivo `servidor_web`.
 
+Para la **búsqueda por foto** (opcional) descarga también un modelo con visión:
+
+```bash
+ollama pull qwen2.5vl:3b
+```
+
+Si no lo encuentra, busca un modelo con visión en https://ollama.com/library (por ejemplo `gemma3:4b`) y cámbialo con `--modelo-vision` o en la variable `MODELO_VISION` de `servidor_web`.
+
 **3. Coloca tu Excel del inventario**
 
 Copia tu archivo dentro de la carpeta **`DataBase/`** con el nombre **`Data.xlsx`**:
@@ -146,6 +154,16 @@ Ejecútalo siempre desde la carpeta principal y respeta las mayúsculas de `API`
 - Buscar por marca o familia (`JNDE` = John Deere), tolerando plurales y errores de escritura; si no hay coincidencia exacta, muestra botones con familias sugeridas
 - Productos con stock bajo, por ubicación y diferencias de conteo
 - Totales y rankings: valor del inventario, el de mayor saldo, etc.
+
+## Búsqueda por foto
+
+Pulsa **📷 Foto** en la página (en el celular abre la cámara) y sube la imagen de una pieza. Un modelo de visión local la describe y el sistema busca en el inventario los productos que mejor coinciden: cada palabra clave presente en la descripción suma puntos, y un código o texto legible en la pieza suma más. El resultado es una tabla de **posibles coincidencias**.
+
+- Funciona mejor con una foto nítida, con buena luz y la pieza centrada.
+- Si la pieza tiene un número de parte o etiqueta legible, inclúyelo en la foto: es lo más fiable.
+- La foto **no permite confirmar medidas**: verifica siempre la pieza antes de usar el resultado.
+- La foto se procesa en tu equipo y no se guarda.
+- Con una gráfica de 6 GB, el modelo de texto y el de visión no caben a la vez: Ollama los cambia, así que la primera foto tras una pregunta (o al revés) tarda más.
 
 ## Consejos para que funcione bien
 

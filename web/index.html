@@ -71,6 +71,11 @@
   .prod td.texto { white-space: normal; min-width: 200px; max-width: 340px; }
   .prod td.num, .prod th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .prod tr:last-child td { border-bottom: 0; }
+  .miniatura { display: block; max-width: 180px; max-height: 180px; border-radius: 10px; margin-top: 6px; }
+  button.foto { padding: 8px 12px; }
+  .sugerencias { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .chip { font-size: 13px; border-radius: 999px; padding: 6px 12px; }
+  .prod-titulo { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
   .prod-pie { font-size: 12px; color: var(--suave); margin-top: 4px; }
   .pensando { color: var(--suave); }
   .pensando::after { content: ""; display: inline-block; width: 1.2em; text-align: left; animation: puntos 1.2s steps(4, end) infinite; }
@@ -100,10 +105,12 @@
 
 <footer>
   <form id="form">
+    <input id="archivo" type="file" accept="image/*" hidden>
+    <button id="foto" class="foto" type="button" title="Buscar una pieza por foto" aria-label="Buscar por foto">📷 Foto</button>
     <textarea id="entrada" rows="1" maxlength="1000" placeholder="Pregunta sobre el inventario…" autofocus></textarea>
     <button id="enviar" class="primario" type="submit">Enviar</button>
   </form>
-  <div class="nota">Una consulta a la vez: si hay otra en curso, tu pregunta espera su turno.</div>
+  <div class="nota">Una consulta a la vez: si hay otra en curso, tu pregunta espera su turno. Con 📷 puedes buscar una pieza por foto.</div>
 </footer>
 
 <script>
@@ -122,6 +129,8 @@
   var $entrada = document.getElementById("entrada");
   var $enviar = document.getElementById("enviar");
   var $nueva = document.getElementById("nueva");
+  var $foto = document.getElementById("foto");
+  var $archivo = document.getElementById("archivo");
   var ocupado = false;
 
   // Identificador de conversación (cada navegador tiene el suyo)
@@ -203,12 +212,16 @@
     return String(v);
   }
 
-  function tablaProductos(t) {
+  function tablaProductos(t, conTitulo) {
     var filas = t.filas || [];
     var cols = COLS.slice();
     if (filas.length && filas[0].diferencia !== undefined) cols = cols.concat(EXTRA);
 
     var cont = document.createElement("div"); cont.className = "prod";
+    if (t.titulo) {
+      var ti = document.createElement("div"); ti.className = "prod-titulo"; ti.textContent = t.titulo;
+      cont.appendChild(ti);
+    }
     var scroll = document.createElement("div"); scroll.className = "prod-scroll";
     var tabla = document.createElement("table");
     var thead = document.createElement("thead"), trh = document.createElement("tr");
@@ -267,7 +280,7 @@
   }
 
   function bloquear(v) {
-    ocupado = v; $enviar.disabled = v; $nueva.disabled = v; $entrada.disabled = v;
+    ocupado = v; $enviar.disabled = v; $nueva.disabled = v; $entrada.disabled = v; $foto.disabled = v;
     if (!v) $entrada.focus();
   }
 
@@ -283,39 +296,91 @@
     });
   }
 
-  function preguntar(texto) {
-    texto = (texto || "").trim();
-    if (!texto || ocupado) return;
+  function pintarRespuesta(burbuja, datos) {
+    burbuja.classList.remove("pensando");
+    var hayTablas = !!(datos.tablas && datos.tablas.length);
+    var haySug = !!(datos.sugerencias && datos.sugerencias.length);
+    burbuja.innerHTML = datos.respuesta ? formato(datos.respuesta) : ((hayTablas || haySug) ? "" : "Resultados:");
+    if (hayTablas) {
+      burbuja.classList.add("ancha");
+      datos.tablas.forEach(function (t) { burbuja.appendChild(tablaProductos(t, true)); });
+    }
+    if (haySug) burbuja.appendChild(chipsFamilias(datos.sugerencias));
+    if (datos.consultas && datos.consultas.length) {
+      var det = document.createElement("details");
+      var sum = document.createElement("summary");
+      sum.textContent = "Datos consultados (" + datos.consultas.length + ")";
+      det.appendChild(sum);
+      datos.consultas.forEach(function (c) {
+        var d = document.createElement("div"); d.textContent = resumenConsulta(c); det.appendChild(d);
+      });
+      burbuja.appendChild(det);
+    }
+  }
+
+  // Botones con las familias sugeridas: al pulsar uno se muestran sus productos (sin pasar por el modelo)
+  function chipsFamilias(lista) {
+    var cont = document.createElement("div"); cont.className = "sugerencias";
+    lista.forEach(function (sg) {
+      var b = document.createElement("button"); b.type = "button"; b.className = "chip";
+      b.textContent = sg.familia + (sg.productos != null ? " (" + sg.productos + ")" : "");
+      b.addEventListener("click", function () { elegirFamilia(sg.familia); });
+      cont.appendChild(b);
+    });
+    return cont;
+  }
+
+  function enviar(textoUsuario, url, cuerpo, miniatura) {
+    if (ocupado) return;
     if ($mensajes.querySelector(".bienvenida")) $mensajes.innerHTML = "";
-    agregar("usuario", texto, false);
-    $entrada.value = ""; ajustarAltura();
+    var burbujaUsuario = agregar("usuario", textoUsuario, false);
+    if (miniatura) {
+      var img = document.createElement("img"); img.className = "miniatura"; img.alt = "Foto enviada"; img.src = miniatura;
+      burbujaUsuario.appendChild(img);
+    }
     bloquear(true);
     var espera = agregar("asistente", "Consultando el inventario", false);
     espera.classList.add("pensando");
 
-    post("/api/chat", { session_id: sessionId, mensaje: texto }).then(function (datos) {
-      espera.classList.remove("pensando");
-      espera.innerHTML = formato(datos.respuesta || "(sin respuesta)");
-      if (datos.tablas && datos.tablas.length) {
-        espera.classList.add("ancha");
-        datos.tablas.forEach(function (t) { espera.appendChild(tablaProductos(t)); });
-      }
-      if (datos.consultas && datos.consultas.length) {
-        var det = document.createElement("details");
-        var sum = document.createElement("summary");
-        sum.textContent = "Datos consultados (" + datos.consultas.length + ")";
-        det.appendChild(sum);
-        datos.consultas.forEach(function (c) {
-          var d = document.createElement("div"); d.textContent = resumenConsulta(c); det.appendChild(d);
-        });
-        espera.appendChild(det);
-      }
+    post(url, cuerpo).then(function (datos) {
+      pintarRespuesta(espera, datos);
     }).catch(function (err) {
       var fila = espera.parentNode; fila.className = "msg asistente error";
       espera.classList.remove("pensando");
       espera.textContent = err.message === "Failed to fetch"
         ? "No pude conectar con el servidor. Revisa que siga encendido." : err.message;
     }).then(function () { bloquear(false); bajar(); });
+  }
+
+  function preguntar(texto) {
+    texto = (texto || "").trim();
+    if (!texto || ocupado) return;
+    $entrada.value = ""; ajustarAltura();
+    enviar(texto, "/api/chat", { session_id: sessionId, mensaje: texto });
+  }
+
+  // Reduce la foto (máx. 1024 px, JPG) para que se envíe rápido y el modelo la procese mejor
+  function reducirImagen(archivo, listo, fallo) {
+    var url = URL.createObjectURL(archivo), img = new Image();
+    img.onload = function () {
+      var esc = Math.min(1, 1024 / Math.max(img.width, img.height));
+      var c = document.createElement("canvas");
+      c.width = Math.max(1, Math.round(img.width * esc)); c.height = Math.max(1, Math.round(img.height * esc));
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      listo(c.toDataURL("image/jpeg", 0.85));
+    };
+    img.onerror = function () { URL.revokeObjectURL(url); fallo(); };
+    img.src = url;
+  }
+
+  function errorFoto(texto) {
+    var b = agregar("asistente", texto, false);
+    b.parentNode.className = "msg asistente error";
+  }
+
+  function elegirFamilia(familia) {
+    enviar("Familia: " + familia, "/api/familia", { session_id: sessionId, familia: familia });
   }
 
   function ajustarAltura() {
@@ -327,6 +392,16 @@
   $entrada.addEventListener("input", ajustarAltura);
   $entrada.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); preguntar($entrada.value); }
+  });
+  $foto.addEventListener("click", function () { if (!ocupado) $archivo.click(); });
+  $archivo.addEventListener("change", function () {
+    var archivo = $archivo.files && $archivo.files[0];
+    $archivo.value = "";
+    if (!archivo || ocupado) return;
+    if (!/^image\//.test(archivo.type)) { errorFoto("El archivo no es una imagen."); return; }
+    reducirImagen(archivo, function (dataUrl) {
+      enviar("Foto de una pieza", "/api/foto", { session_id: sessionId, imagen: dataUrl }, dataUrl);
+    }, function () { errorFoto("No pude abrir esa imagen. Usa una foto JPG o PNG."); });
   });
   $nueva.addEventListener("click", function () {
     post("/api/nueva", { session_id: sessionId, mensaje: "" }).catch(function () {});

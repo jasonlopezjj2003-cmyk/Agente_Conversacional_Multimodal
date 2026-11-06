@@ -18,6 +18,7 @@ Uso:
 """
 
 import argparse
+import difflib
 import json
 import re
 import sqlite3
@@ -34,7 +35,7 @@ MAX_FILAS_MODELO = 15   # filas de una lista que ve el modelo (el usuario ve la 
 INSTRUCCIONES = """Eres el asistente de inventario de un negocio. Respondes siempre en español.
 
 REGLAS ESTRICTAS:
-1. Todo dato sobre productos, cantidades, costos, ubicaciones o valores DEBE salir de las herramientas. Nunca inventes ni estimes cifras, y no hagas cálculos por tu cuenta: usa la herramienta que corresponda.
+1. Todo dato sobre productos, cantidades, costos, ubicaciones o valores DEBE salir de las herramientas. Nunca inventes ni estimes cifras, y no hagas cálculos por tu cuenta: usa la herramienta que corresponda. Nunca digas que vas a usar una herramienta: llámala directamente, y nunca escribas marcadores como "X" en lugar de una cifra.
 2. Si una búsqueda no devuelve resultados, dilo claramente ("no encontré ese producto") y sugiere buscar con otras palabras. No inventes productos.
 3. Un mismo producto puede aparecer varias veces con códigos distintos porque corresponden a lotes diferentes. Si hay varios resultados, considéralos TODOS (no elijas uno solo) y, si parecen lotes distintos, indícalo.
 4. Siempre indica la unidad de medida junto a cada cantidad (por ejemplo "24 Unidad" o "150 Metro").
@@ -42,8 +43,61 @@ REGLAS ESTRICTAS:
 6. Si la pregunta es ambigua (por ejemplo, un nombre demasiado general), pide más detalle o muestra las opciones encontradas.
 7. Cuando una consulta devuelve una lista de productos, el sistema la muestra automáticamente al usuario en una tabla (CODIGO, DESCRIPCION, UM, UBICACION, SALDO, COSTO, FAMILIA y OBSERVACIONES) justo debajo de tu mensaje. NUNCA escribas tablas ni enumeres los productos que ya están en esa tabla. Si el usuario solo pidió ver productos, no escribas nada más.
 8. Si el usuario hace una pregunta que requiere análisis (cuál tiene más o menos saldo, costo o valor; cuántos hay; totales; comparaciones), responde en una a tres frases con la conclusión y las cifras clave, tomadas SOLO de las herramientas: usa resumen_busqueda para totales, conteos y extremos exactos, o buscar_productos con ordenar_por para rankings. Cita como máximo uno o dos productos (con su código) y siempre con su unidad de medida. Saldos en unidades de medida distintas no se pueden sumar ni comparar entre sí: indícalo si ocurre.
-9. Sé breve y claro. No menciones las herramientas ni detalles técnicos.
+9. Si el usuario pide productos por marca, tipo de equipo o familia (por ejemplo "tractores John Deere", "llantas", "cabezal mack"), usa buscar_por_familia. Las abreviaturas del inventario (como JNDE = John Deere) las resuelve el sistema. Si no hay coincidencia exacta, el sistema muestra familias sugeridas: no inventes alternativas.
+10. Sé breve y claro. No menciones las herramientas ni detalles técnicos.
 """
+
+
+# --------------------------------------------------------------------------
+# Familias y marcas: abreviaturas, plurales y errores de escritura
+# --------------------------------------------------------------------------
+# Cómo escribe la gente -> cómo aparece en el nombre de la familia en la base de datos
+ALIAS_FAMILIA = {
+    "john deere": "jnde", "jhon deere": "jnde", "jonh deere": "jnde", "jon deere": "jnde",
+    "john dere": "jnde", "jhon dere": "jnde", "jonh dere": "jnde", "deere": "jnde", "dere": "jnde", "jd": "jnde",
+    "newholland": "new holland", "nh": "new holland",
+    "international": "inter", "internacional": "inter", "navistar": "inter",
+    "cat": "caterpillar", "vanguard": "vanguad",
+}
+PALABRAS_VACIAS = {
+    "de", "del", "la", "las", "el", "los", "un", "una", "unos", "unas", "para", "por", "con", "en", "y", "o", "a",
+    "que", "hay", "tienen", "tiene", "tienes", "busco", "buscar", "buscando", "quiero", "necesito", "dame", "dime",
+    "muestrame", "mostrar", "muestra", "lista", "listado", "producto", "productos", "repuesto", "repuestos",
+    "marca", "marcas", "familia", "familias", "articulo", "articulos", "item", "items", "inventario", "favor",
+    "john", "jhon", "jonh", "jon",
+}
+
+
+def _quitar_acentos(texto: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", texto) if unicodedata.category(c) != "Mn")
+
+
+def _singular(palabra: str) -> str:
+    if palabra.endswith("es") and len(palabra) > 5:
+        return palabra[:-2]
+    if palabra.endswith("s") and len(palabra) > 3:
+        return palabra[:-1]
+    return palabra
+
+
+def tokens_familia(texto: str) -> list:
+    """Palabras de un nombre de familia, sin acentos ni plurales."""
+    return [_singular(t) for t in re.findall(r"[a-z0-9]+", _quitar_acentos(str(texto)).lower())]
+
+
+def tokens_consulta(texto: str) -> list:
+    """Palabras que pidió el usuario, con alias aplicados (John Deere -> jnde), sin palabras vacías ni plurales."""
+    t = _quitar_acentos(str(texto)).lower()
+    for frase in sorted(ALIAS_FAMILIA, key=len, reverse=True):
+        t = re.sub(rf"\b{re.escape(frase)}\b", ALIAS_FAMILIA[frase], t)
+    return [_singular(x) for x in re.findall(r"[a-z0-9]+", t) if x not in PALABRAS_VACIAS]
+
+
+def _coincide(q: str, f: str) -> bool:
+    if q == f:
+        return True
+    # tolera errores de escritura solo en palabras largas (evita confundir "cat" con "case")
+    return len(q) >= 5 and len(f) >= 5 and difflib.SequenceMatcher(None, q, f).ratio() >= 0.82
 
 
 # --------------------------------------------------------------------------
@@ -123,9 +177,114 @@ class Inventario:
             filas = self._filas(self.con.execute(
                 f"SELECT {self._COLS} FROM productos p WHERE {cond} {orden_like} LIMIT ?",
                 [f"%{p}%" for p in palabras] + [limite + 1]))
+        if not filas:   # sin coincidencias en descripciones: probar por familia o marca
+            por_familia = self.buscar_por_familia(texto, sugerir_todas=False)
+            if por_familia:
+                return por_familia
         hay_mas = len(filas) > limite
         return {"resultados": filas[:limite], "hay_mas_resultados": hay_mas,
                 "nota": "Resultados incompletos: pide al usuario más detalle." if hay_mas else ""}
+
+    # -- familias y marcas --------------------------------------------------
+    def _familias_con_conteo(self):
+        return [(f, n) for f, n in self.con.execute(
+            "SELECT familia, COUNT(*) FROM productos GROUP BY familia ORDER BY familia")]
+
+    @staticmethod
+    def _sugerencias(items, mensaje):
+        return {"sugerencias": [{"familia": f, "productos": n} for f, n, *_ in items], "mensaje_usuario": mensaje}
+
+    def _productos_de_familias(self, familias):
+        marcas = ",".join("?" for _ in familias)
+        total = self.con.execute(f"SELECT COUNT(*) FROM productos WHERE familia IN ({marcas})", familias).fetchone()[0]
+        filas = self._filas(self.con.execute(
+            f"SELECT {self._COLS} FROM productos p WHERE p.familia IN ({marcas}) "
+            f"ORDER BY p.descripcion LIMIT ?", familias + [LIMITE_LISTA]))
+        return {"titulo": "Familia: " + ", ".join(familias), "total_coincidencias": total,
+                "mostrando": len(filas), "hay_mas_resultados": total > len(filas), "resultados": filas}
+
+    def productos_de_familia(self, familia: str):
+        """Productos de una familia por su nombre exacto (la usan los botones de sugerencia)."""
+        fam = self._familia_valida(familia)
+        if not fam or fam == "__NO_EXISTE__":
+            return {"error": f"La familia '{familia}' no existe.", "familias_disponibles": self._familias()}
+        return self._productos_de_familias([fam])
+
+    def buscar_por_familia(self, texto: str, sugerir_todas: bool = True):
+        """Busca por marca, tipo de equipo o familia. Si no hay coincidencia exacta, sugiere familias parecidas."""
+        q = tokens_consulta(texto)
+        if not q:
+            return self._sugerencias(self._familias_con_conteo(), "Estas son las familias disponibles:")
+        directas, parciales = [], []
+        for fam, n in self._familias_con_conteo():
+            tf = tokens_familia(fam)
+            m = sum(1 for tq in q if any(_coincide(tq, x) for x in tf))
+            if m == len(q):
+                directas.append((fam, n))
+            elif m > 0:
+                parciales.append((fam, n, m))
+        if len(directas) == 1:
+            resultado = self._productos_de_familias([directas[0][0]])
+            resultado["nota"] = f"Coincidencia por familia: '{texto}' corresponde a la familia {directas[0][0]}."
+            return resultado
+        if len(directas) > 1:
+            directas.sort(key=lambda x: -x[1])
+            return self._sugerencias(directas[:12], f"Hay varias familias relacionadas con «{texto}». ¿Cuál buscabas?")
+        if parciales:
+            parciales.sort(key=lambda x: (-x[2], -x[1]))
+            return self._sugerencias(parciales[:8], f"No encontré «{texto}» exactamente. ¿Buscabas alguna de estas familias?")
+        if sugerir_todas:
+            return self._sugerencias(self._familias_con_conteo(), f"No encontré «{texto}». Estas son las familias disponibles:")
+        return None
+
+    def buscar_por_descripcion_foto(self, palabras, textos=()):
+        """Productos que mejor coinciden con las palabras clave (y textos legibles) sacados de una foto.
+        Cada palabra que aparece en la descripción suma un punto; un código o texto exacto suma cinco."""
+        claves = []
+        for p in palabras or []:
+            for t in re.findall(r"[a-z0-9]+", self._sin_acentos(str(p)).lower()):
+                t = _singular(t)
+                if len(t) >= 3 and t not in PALABRAS_VACIAS and t not in claves:
+                    claves.append(t)
+        codigos = []
+        for x in textos or []:
+            for t in re.findall(r"[A-Za-z0-9][A-Za-z0-9\-/.]{3,}", str(x)):
+                t = t.strip(".-/").upper()
+                if len(t) >= 4 and t not in codigos:
+                    codigos.append(t)
+        claves, codigos = claves[:8], codigos[:5]
+        if not claves and not codigos:
+            return {"resultados": [], "claves": [], "codigos": []}
+
+        puntaje, filas_por_codigo = {}, {}
+        if claves:
+            try:
+                consulta = " OR ".join(f'"{c}"*' for c in claves)
+                filas = self.con.execute(
+                    f"SELECT {self._COLS} FROM productos_fts f JOIN productos p ON p.codigo = f.codigo "
+                    f"WHERE productos_fts MATCH ? ORDER BY rank LIMIT 300", (consulta,)).fetchall()
+            except sqlite3.OperationalError:   # sin FTS5
+                cond = " OR ".join("p.descripcion LIKE ?" for _ in claves)
+                filas = self.con.execute(
+                    f"SELECT {self._COLS} FROM productos p WHERE {cond} LIMIT 300",
+                    [f"%{c}%" for c in claves]).fetchall()
+            for orden, r in enumerate(filas):
+                desc = self._sin_acentos(r["descripcion"]).lower()
+                puntaje[r["codigo"]] = (sum(1 for c in claves if c in desc), -orden)
+                filas_por_codigo[r["codigo"]] = r
+        for cod in codigos:
+            for r in self.con.execute(
+                    f"SELECT {self._COLS} FROM productos p WHERE p.codigo = ? OR UPPER(p.descripcion) LIKE ? LIMIT 20",
+                    (cod, f"%{cod}%")):
+                n, o = puntaje.get(r["codigo"], (0, 0))
+                puntaje[r["codigo"]] = (n + 5, o)
+                filas_por_codigo[r["codigo"]] = r
+
+        ordenados = sorted(puntaje, key=lambda k: puntaje[k], reverse=True)[:LIMITE_LISTA]
+        filas = self._filas([filas_por_codigo[k] for k in ordenados])
+        return {"titulo": "Posibles coincidencias con la foto", "total_coincidencias": len(puntaje),
+                "mostrando": len(filas), "hay_mas_resultados": len(puntaje) > len(filas),
+                "resultados": filas, "claves": claves, "codigos": codigos}
 
     def _coincidencias(self, palabras):
         """CTE con los productos que contienen todas las palabras (y sus parámetros)."""
@@ -202,11 +361,27 @@ class Inventario:
             return {"error": f"La familia '{familia}' no existe.", "familias_disponibles": self._familias()}
         filtro, params = ("WHERE familia = ?", [fam]) if fam else ("", [])
         general = self._filas(self.con.execute(
-            f"SELECT COUNT(*) AS productos, ROUND(SUM(total), 2) AS valor_total FROM v_inventario {filtro}", params))[0]
+            f"SELECT COUNT(*) AS productos, SUM(saldo > 0) AS con_stock, SUM(saldo <= 0) AS sin_stock, "
+            f"ROUND(SUM(total), 2) AS valor_total FROM v_inventario {filtro}", params))[0]
+        por_unidad = self._filas(self.con.execute(
+            f"SELECT unidad, COUNT(*) AS productos, ROUND(SUM(saldo), 2) AS saldo_total "
+            f"FROM v_inventario {filtro} GROUP BY unidad ORDER BY productos DESC", params))
         por_familia = self._filas(self.con.execute(
             f"SELECT familia, COUNT(*) AS productos, ROUND(SUM(total), 2) AS valor_total "
             f"FROM v_inventario {filtro} GROUP BY familia ORDER BY valor_total DESC", params))
-        return {"filtro_familia": fam, **general, "por_familia": por_familia}
+        return {"filtro_familia": fam, **general, "por_unidad": por_unidad, "por_familia": por_familia,
+                "nota": "'productos' cuenta códigos distintos, no piezas; los saldos de unidades de medida "
+                        "distintas no se suman entre sí."}
+
+    def productos_al_azar(self, cantidad: int = 10, familia: str = None):
+        fam = self._familia_valida(familia)
+        if fam == "__NO_EXISTE__":
+            return {"error": f"La familia '{familia}' no existe.", "familias_disponibles": self._familias()}
+        cantidad = self._limite(cantidad, 10)
+        filtro, params = ("WHERE p.familia = ?", [fam]) if fam else ("", [])
+        filas = self._filas(self.con.execute(
+            f"SELECT {self._COLS} FROM productos p {filtro} ORDER BY RANDOM() LIMIT ?", params + [cantidad]))
+        return {"titulo": "Productos al azar" + (f" · {fam}" if fam else ""), "resultados": filas}
 
     def productos_en_ubicacion(self, ubicacion: str, limite: int = LIMITE_LISTA):
         limite = self._limite(limite, LIMITE_LISTA)
@@ -238,7 +413,8 @@ class Inventario:
         return {**resumen, "nota": "Ordenado por mayor impacto en costo (valor absoluto).", "resultados": filas}
 
     def listar_familias(self):
-        return {"familias": self._familias()}
+        familias = self._familias_con_conteo()
+        return self._sugerencias(familias, f"Hay {len(familias)} familias (categorías) de productos. Elige una para ver sus productos:")
 
 
 # --------------------------------------------------------------------------
@@ -262,10 +438,18 @@ HERRAMIENTAS = [
            "orden": {"type": "string", "enum": ["desc", "asc"],
                      "description": "desc = de mayor a menor (por defecto); asc = de menor a mayor."}},
           ["texto"]),
+    _herr("buscar_por_familia",
+          "Busca productos por marca, tipo de equipo o familia (ej. 'tractores John Deere', 'cabezal mack', 'llantas'). "
+          "Entiende abreviaturas del inventario (JNDE = John Deere), plurales y errores de escritura. Si hay una sola "
+          "familia que coincide, muestra sus productos; si hay varias o ninguna exacta, muestra familias sugeridas "
+          "para que el usuario elija. Úsala cuando el usuario pida por marca, tipo de equipo o familia.",
+          {"texto": {"type": "string", "description": "Marca, equipo o familia, tal como la escribió el usuario."}},
+          ["texto"]),
     _herr("resumen_busqueda",
           "Calcula totales y extremos EXACTOS de todos los productos que coinciden con un texto: cuántos son, "
           "valor total, cuántos sin stock, saldo total por unidad de medida y los 2 de mayor/menor saldo, costo y valor. "
-          "Úsala para preguntas de 'cuántos hay', 'total', 'cuál tiene más/menos' o comparaciones.",
+          "Úsala solo cuando hay un producto o texto concreto ('cuántas mangueras hay', 'cuál manguera tiene más saldo'). "
+          "Para totales generales del inventario usa valor_inventario.",
           {"texto": {"type": "string", "description": "Palabras a buscar en la descripción."}},
           ["texto"]),
     _herr("obtener_producto",
@@ -278,9 +462,15 @@ HERRAMIENTAS = [
            "limite": {"type": "integer", "description": "Usa solo si el usuario pide expresamente MENOS resultados (máximo 30). Por defecto se muestran hasta 30."}},
           ["umbral"]),
     _herr("valor_inventario",
-          "Calcula el valor total del inventario (saldo x costo) y la cantidad de productos, "
-          "en total y por familia. Úsala para cualquier pregunta sobre valor, total o cuántos productos hay.",
+          "Totales generales del inventario: cantidad de productos (códigos), cuántos tienen o no stock, valor total "
+          "(saldo x costo) y saldo total por unidad de medida, en total y por familia. Úsala para 'cuántos productos "
+          "hay', 'cuántas piezas hay en stock', 'valor total' o 'total del inventario' (sin un producto concreto).",
           {"familia": {"type": "string", "description": "Familia opcional para filtrar."}}),
+    _herr("productos_al_azar",
+          "Muestra productos elegidos al azar (opcionalmente de una familia). Úsala cuando el usuario pida una lista "
+          "aleatoria, al azar o 'cualquier' producto.",
+          {"cantidad": {"type": "integer", "description": "Cuántos mostrar (por defecto 10, máximo 30)."},
+           "familia": {"type": "string", "description": "Familia opcional."}}),
     _herr("productos_en_ubicacion",
           "Lista los productos de una ubicación (acepta prefijo, ej. '643' trae toda la zona 643-xxx).",
           {"ubicacion": {"type": "string", "description": "Ubicación o prefijo, ej. '643-008'."},
@@ -291,7 +481,7 @@ HERRAMIENTAS = [
           "con la diferencia en cantidad y en costo. Úsala para preguntas sobre faltantes, sobrantes o diferencias.",
           {"familia": {"type": "string", "description": "Familia opcional para filtrar."},
            "limite": {"type": "integer", "description": "Usa solo si el usuario pide expresamente MENOS resultados (máximo 30). Por defecto se muestran hasta 30."}}),
-    _herr("listar_familias", "Lista las familias (categorías) de productos disponibles.", {}),
+    _herr("listar_familias", "Muestra las familias (categorías) de productos disponibles, con su cantidad de productos.", {}),
 ]
 
 
@@ -328,7 +518,7 @@ def extraer_tabla(resultado):
     if not filas:
         return None
     return {"filas": filas, "total": resultado.get("total_coincidencias"),
-            "hay_mas": bool(resultado.get("hay_mas_resultados"))}
+            "hay_mas": bool(resultado.get("hay_mas_resultados")), "titulo": resultado.get("titulo")}
 
 
 def compactar_para_modelo(resultado):
@@ -364,9 +554,16 @@ def pregunta_analitica(texto: str) -> bool:
     return bool(_ANALISIS.search(Inventario._sin_acentos(texto or "").lower()))
 
 
+_PROMESA = re.compile(r"\b(utiliz|usar[eé]|usare|voy a|consultar[eé]|funci[oó]n|herramienta|ejecut)", re.I)
+
+
 def titulo_tabla(nombre: str, args: dict) -> str:
     if nombre == "buscar_productos":
         return f"Búsqueda: {args.get('texto', '')}"
+    if nombre == "buscar_por_familia":
+        return f"Familia: {args.get('texto', '')}"
+    if nombre == "productos_al_azar":
+        return "Productos al azar"
     if nombre == "stock_bajo":
         return f"Stock menor o igual a {args.get('umbral', '')}" + (f" · {args['familia']}" if args.get("familia") else "")
     if nombre == "productos_en_ubicacion":
@@ -391,18 +588,35 @@ def tabla_texto(filas) -> str:
 # Conversación con el modelo
 # --------------------------------------------------------------------------
 def responder(ollama, inv: Inventario, modelo: str, mensajes: list, verbose: bool = True,
-              registro: list = None, tablas: list = None, solo_tabla: bool = False) -> str:
+              registro: list = None, tablas: list = None, solo_tabla: bool = False,
+              sugerencias: list = None) -> str:
     """Con solo_tabla=True, si todas las consultas devolvieron listas de productos y la pregunta solo pide
     verlos, la respuesta es únicamente la tabla (texto vacío) y se evita una segunda llamada al modelo.
     Si la pregunta pide un análisis (cuál tiene más, cuántos hay...), el modelo además comenta el resultado."""
+    herramientas_usadas = False
+    reintentado = False
+    aviso = []
     for _ in range(MAX_RONDAS):
-        resp = ollama.chat(model=modelo, messages=mensajes, tools=HERRAMIENTAS,
+        resp = ollama.chat(model=modelo, messages=mensajes + aviso, tools=HERRAMIENTAS,
                            options={"temperature": 0})
         msg = resp.message
+        if not msg.tool_calls and not herramientas_usadas and not reintentado:
+            texto = (msg.content or "").strip()
+            if not texto or _PROMESA.search(texto):
+                # El modelo anunció que usaría una herramienta (o no dijo nada) sin llamarla: se le pide que la llame.
+                reintentado = True
+                aviso = [{"role": "user", "content": "Responde llamando a la herramienta adecuada; no escribas que la vas a usar ni inventes cifras."}]
+                continue
+        aviso = []
         mensajes.append(msg)
         if not msg.tool_calls:
-            return (msg.content or "").strip() or "No pude generar una respuesta."
+            texto = (msg.content or "").strip()
+            if not texto or (not herramientas_usadas and _PROMESA.search(texto)):
+                return "No pude consultar el inventario con esa pregunta. Prueba a reformularla, por ejemplo indicando el producto o la familia."
+            return texto
+        herramientas_usadas = True
         todas_con_tabla = True
+        mensaje_sugerencia = None
         for llamada in msg.tool_calls:
             nombre = llamada.function.name
             args = dict(llamada.function.arguments or {})
@@ -411,16 +625,25 @@ def responder(ollama, inv: Inventario, modelo: str, mensajes: list, verbose: boo
             if registro is not None:
                 registro.append({"herramienta": nombre, "argumentos": args})
             resultado = ejecutar_herramienta(inv, nombre, args)
+            if isinstance(resultado, dict) and resultado.get("sugerencias") is not None:
+                if sugerencias is not None:
+                    sugerencias.extend(resultado["sugerencias"])
+                mensaje_sugerencia = resultado.get("mensaje_usuario") or mensaje_sugerencia
             tabla = extraer_tabla(resultado)
             if tabla:
                 if tablas is not None:
-                    tabla["titulo"] = titulo_tabla(nombre, args)
+                    tabla["titulo"] = tabla.get("titulo") or titulo_tabla(nombre, args)
                     tablas.append(tabla)
             else:
                 todas_con_tabla = False
             mensajes.append({"role": "tool", "tool_name": nombre,
                              "content": json.dumps(compactar_para_modelo(resultado),
                                                    ensure_ascii=False, separators=(",", ":"))})
+        if solo_tabla and sugerencias is not None and mensaje_sugerencia:
+            # Texto fijo (no lo redacta el modelo): el usuario elige una de las familias sugeridas
+            nombres = ", ".join(sg["familia"] for sg in sugerencias[:10])
+            mensajes.append({"role": "assistant", "content": f"{mensaje_sugerencia} (Opciones mostradas: {nombres})"})
+            return mensaje_sugerencia
         if solo_tabla and tablas is not None and todas_con_tabla and not pregunta_analitica(ultima_pregunta(mensajes)):
             # Se deja constancia en el historial para que las preguntas siguientes tengan contexto
             mensajes.append({"role": "assistant", "content": "(Se mostró al usuario la tabla con los resultados.)"})
@@ -449,7 +672,8 @@ def modo_chat(inv: Inventario, modelo: str, verbose: bool):
         mensajes.append({"role": "user", "content": pregunta})
         try:
             tablas = []
-            respuesta = responder(ollama, inv, modelo, mensajes, verbose, tablas=tablas, solo_tabla=True)
+            sugs = []
+            respuesta = responder(ollama, inv, modelo, mensajes, verbose, tablas=tablas, solo_tabla=True, sugerencias=sugs)
         except Exception as e:  # ollama apagado, modelo no descargado, etc.
             mensajes.pop()
             print(f"\nError al hablar con Ollama: {e}\n"
@@ -458,6 +682,8 @@ def modo_chat(inv: Inventario, modelo: str, verbose: bool):
         print(f"\nAsistente: {respuesta}\n" if respuesta else "")
         for tabla in tablas:
             print(tabla_texto(tabla["filas"]) + "\n")
+        for sg in sugs:
+            print(f"  - {sg['familia']} ({sg['productos']})")
         # Conserva el sistema + los mensajes más recientes
         if len(mensajes) > MAX_MENSAJES:
             mensajes = [mensajes[0]] + mensajes[-(MAX_MENSAJES - 1):]
