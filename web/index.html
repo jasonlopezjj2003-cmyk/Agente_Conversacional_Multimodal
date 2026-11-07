@@ -72,7 +72,10 @@
   .prod td.num, .prod th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .prod tr:last-child td { border-bottom: 0; }
   .miniatura { display: block; max-width: 180px; max-height: 180px; border-radius: 10px; margin-top: 6px; }
-  button.foto { padding: 8px 12px; }
+  button.foto { padding: 8px 12px; white-space: nowrap; }
+  .solo-movil { display: none; }
+  @media (pointer: coarse) { .solo-movil { display: inline-block; } }
+  @media (max-width: 600px) { button.foto .txt { display: none; } button.foto { padding: 8px 10px; font-size: 18px; } }
   .sugerencias { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
   .chip { font-size: 13px; border-radius: 999px; padding: 6px 12px; }
   .prod-titulo { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
@@ -106,11 +109,13 @@
 <footer>
   <form id="form">
     <input id="archivo" type="file" accept="image/*" hidden>
-    <button id="foto" class="foto" type="button" title="Buscar una pieza por foto" aria-label="Buscar por foto">📷 Foto</button>
+    <input id="archivoCamara" type="file" accept="image/*" capture="environment" hidden>
+    <button id="camara" class="foto solo-movil" type="button" title="Tomar una foto de la pieza" aria-label="Tomar foto">📷<span class="txt"> Tomar foto</span></button>
+    <button id="foto" class="foto" type="button" title="Subir una foto de la pieza" aria-label="Subir foto">🖼️<span class="txt"> Subir foto</span></button>
     <textarea id="entrada" rows="1" maxlength="1000" placeholder="Pregunta sobre el inventario…" autofocus></textarea>
     <button id="enviar" class="primario" type="submit">Enviar</button>
   </form>
-  <div class="nota">Una consulta a la vez: si hay otra en curso, tu pregunta espera su turno. Con 📷 puedes buscar una pieza por foto.</div>
+  <div class="nota">Una consulta a la vez: si hay otra en curso, tu pregunta espera su turno. Puedes buscar una pieza con una foto.</div>
 </footer>
 
 <script>
@@ -131,6 +136,8 @@
   var $nueva = document.getElementById("nueva");
   var $foto = document.getElementById("foto");
   var $archivo = document.getElementById("archivo");
+  var $camara = document.getElementById("camara");
+  var $archivoCamara = document.getElementById("archivoCamara");
   var ocupado = false;
 
   // Identificador de conversación (cada navegador tiene el suyo)
@@ -280,7 +287,7 @@
   }
 
   function bloquear(v) {
-    ocupado = v; $enviar.disabled = v; $nueva.disabled = v; $entrada.disabled = v; $foto.disabled = v;
+    ocupado = v; $enviar.disabled = v; $nueva.disabled = v; $entrada.disabled = v; $foto.disabled = v; $camara.disabled = v;
     if (!v) $entrada.focus();
   }
 
@@ -300,7 +307,7 @@
     burbuja.classList.remove("pensando");
     var hayTablas = !!(datos.tablas && datos.tablas.length);
     var haySug = !!(datos.sugerencias && datos.sugerencias.length);
-    burbuja.innerHTML = datos.respuesta ? formato(datos.respuesta) : ((hayTablas || haySug) ? "" : "Resultados:");
+    burbuja.innerHTML = datos.respuesta ? formato(datos.respuesta) : ((hayTablas || haySug) ? "" : "(sin respuesta)");
     if (hayTablas) {
       burbuja.classList.add("ancha");
       datos.tablas.forEach(function (t) { burbuja.appendChild(tablaProductos(t, true)); });
@@ -393,16 +400,19 @@
   $entrada.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); preguntar($entrada.value); }
   });
-  $foto.addEventListener("click", function () { if (!ocupado) $archivo.click(); });
-  $archivo.addEventListener("change", function () {
-    var archivo = $archivo.files && $archivo.files[0];
-    $archivo.value = "";
+  function alElegirImagen(entrada) {
+    var archivo = entrada.files && entrada.files[0];
+    entrada.value = "";
     if (!archivo || ocupado) return;
     if (!/^image\//.test(archivo.type)) { errorFoto("El archivo no es una imagen."); return; }
     reducirImagen(archivo, function (dataUrl) {
       enviar("Foto de una pieza", "/api/foto", { session_id: sessionId, imagen: dataUrl }, dataUrl);
     }, function () { errorFoto("No pude abrir esa imagen. Usa una foto JPG o PNG."); });
-  });
+  }
+  $foto.addEventListener("click", function () { if (!ocupado) $archivo.click(); });
+  $camara.addEventListener("click", function () { if (!ocupado) $archivoCamara.click(); });
+  $archivo.addEventListener("change", function () { alElegirImagen($archivo); });
+  $archivoCamara.addEventListener("change", function () { alElegirImagen($archivoCamara); });
   $nueva.addEventListener("click", function () {
     post("/api/nueva", { session_id: sessionId, mensaje: "" }).catch(function () {});
     sessionId = nuevoId();
